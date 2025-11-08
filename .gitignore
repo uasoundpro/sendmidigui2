@@ -6,6 +6,5 @@ debug_log.txt
 /Setlist
 /__pycache__
 /gui/__pycache__
-*.csv
 MidiList_Set.csv
 MidiList_Set.csv
