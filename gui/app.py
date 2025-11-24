@@ -18,6 +18,10 @@ class MidiSenderApp:
         self.midi_manager = MidiManager(self.handle_monitor_event)
         self.midi_manager.set_root(root)
 
+        # --- !! NEW: Load QC Map !! ---
+        self.qc_map = self._load_qc_map()
+        # --- !! END NEW !! ---
+
         try:
             self.config = config.load_config()
 
@@ -103,6 +107,50 @@ class MidiSenderApp:
             fg="#888888" # Subtle grey
         ).place(relx=1.0, rely=0, anchor="ne", x=-5, y=2) # Place in top-right corner
     # --- !! END OF NEW METHOD !! ---
+
+    # --- !! NEW: Load QC Map Helper !! ---
+    def _load_qc_map(self):
+        """Loads the QC Display # to PC # map from the CSV."""
+        qc_map = {}
+        # Use config.SCRIPT_PATH to ensure the path is correct
+        map_file = os.path.join(config.SCRIPT_PATH, "DeviceMIDIMap-MASTER.csv")
+        
+        if not os.path.exists(map_file):
+            print(f"WARNING: DeviceMIDIMap-MASTER.csv not found at {map_file}")
+            print("QC lookup by name (e.g., '7C') will be disabled.")
+            return qc_map # Return empty map
+
+        try:
+            # Try reading with utf-8, then fall back
+            try:
+                with open(map_file, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    next(reader) # Skip the header row "MIDI PC #,QC Display #"
+                    for row in reader:
+                        if len(row) >= 2:
+                            pc_num = row[0].strip()
+                            display_name = row[1].strip().upper() # Store keys as uppercase
+                            if display_name: # Ensure key is not empty
+                                qc_map[display_name] = pc_num
+            except UnicodeDecodeError:
+                 with open(map_file, "r", encoding="latin-1") as f:
+                    reader = csv.reader(f)
+                    next(reader) # Skip the header row
+                    for row in reader:
+                        if len(row) >= 2:
+                            pc_num = row[0].strip()
+                            display_name = row[1].strip().upper() 
+                            if display_name:
+                                qc_map[display_name] = pc_num
+                                
+            print("QC Map loaded successfully. Items:", len(qc_map))
+        except Exception as e:
+            print(f"Error loading QC Map: {e}")
+            traceback.print_exc()
+
+        return qc_map
+    # --- !! END NEW HELPER !! ---
+
 
     def _setup_window(self):
         self.root.title(f"MIDI Patch Sender {config.APP_VERSION} EXPERIMENTAL") # <--- UPDATED TITLE
@@ -398,8 +446,35 @@ class MidiSenderApp:
                 if len(row) >= 3:
                     label = row[0].strip()
                     try:
-                        prog1 = int(row[1].strip())
-                        prog2 = int(row[2].strip())
+                        # --- !! MODIFICATION START: Handle QC Map Lookup !! ---
+                        qc_val = row[1].strip()
+                        prog1 = None
+                        try:
+                            # First, try to see if it's already an integer
+                            prog1 = int(qc_val)
+                        except ValueError:
+                            # If not, it's a string (e.g., "7C"). Look it up.
+                            if self.qc_map:
+                                # Use .upper() to match map keys
+                                pc_str = self.qc_map.get(qc_val.upper()) 
+                                if pc_str is not None:
+                                    prog1 = int(pc_str)
+                                else:
+                                    print(f"Skipping row: QC value '{qc_val}' (for '{label}') not found in map.")
+                                    continue # Skip this row
+                            else:
+                                print(f"Skipping row: QC value '{qc_val}' (for '{label}') is a string, but QC map is not loaded.")
+                                continue # Skip this row
+                        
+                        if prog1 is None:
+                            # This should only happen if logic is flawed, but as a safeguard.
+                            print(f"Skipping row: Could not determine prog1 for {label}")
+                            continue
+                        # --- !! MODIFICATION END !! ---
+
+                        # Column 3 (MC8) must still be an integer
+                        prog2 = int(row[2].strip()) 
+                        
                         cc_commands = []
                         cc_data = row[3:]
                         for i in range(0, len(cc_data), 3):
@@ -418,7 +493,8 @@ class MidiSenderApp:
                         btn.pack(pady=5, padx=10, fill="x")
                         self.all_buttons.append(btn)
                     except ValueError:
-                        print(f"Skipping invalid row: {row}")
+                        # This will now catch if prog2 (column 3) is not an integer
+                        print(f"Skipping invalid row (check if CH2 PC# is a number): {row}")
             self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
         except FileNotFoundError:
@@ -432,7 +508,6 @@ class MidiSenderApp:
             self.show_toast(msg, bg="red")
 
     def patch_func_factory(self, current_btn, label, prog1, prog2, cc_commands):
-        # (This function was modified in a previous step and remains unchanged here)
         def patch_func():
             now = time.time()
             if now - self.last_press_time < 1:
@@ -457,11 +532,15 @@ class MidiSenderApp:
             # --- !! MODIFICATION START !! ---
             # Isolate the first command and the rest of the commands.
             first_command = ["ch", "2", "pc", "127"]
+            
+            # --- !! ADDED MIDI CLOCK COMMAND !! ---
             remaining_commands = [
                 ["ch", "1", "cc", "47", "2"],
                 ["ch", "1", "pc", str(prog1)],
+                ["clock", "90"], # <-- SENDS 'clock 90' COMMAND TO CH2 DEVICE
                 ["ch", "2", "pc", str(prog2)]
             ] + cc_commands
+            # --- !! END OF CHANGE !! ---
     
             commands_ch1_before = []
             commands_after = []

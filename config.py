@@ -3,7 +3,7 @@ import json
 import time
 import sys
 
-APP_VERSION = "v2.1.2" #2025-11-02
+APP_VERSION = "v2.1.3" #2025-11-23
 
 # =================== FILE PATHS =====================
 # Resolve the script's location
