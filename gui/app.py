@@ -324,7 +324,6 @@ class MidiSenderApp:
         # The monitor loop will also pick this up on its next cycle if needed
     # --- !! END NEW !! ---
 
-
     def scroll_up(self):
         self.btn_up.config(relief="sunken")
         self.canvas.yview_scroll(-1, "units")
@@ -561,17 +560,34 @@ class MidiSenderApp:
             def _send_patch_commands_in_thread():
                 root_exists = self.root and self.root.winfo_exists()
                 try:
-                    # 1. Send the first command immediately.
-                    self.midi_manager.send_midi([first_command])
+                    # --- DEFINED THE EXTRA COMMANDS HERE ---
+                    # The reset wave (PC 127)
+                    ch3_reset_127 = ["ch", "3", "pc", "127"] 
+                    ch4_reset_127 = ["ch", "4", "pc", "127"] 
+                    
+                    # The post-reset wave (PC 126)
+                    ch3_post_126 = ["ch", "3", "pc", "126"]
+                    ch4_post_126 = ["ch", "4", "pc", "126"]
+                    
+                    # 1. Send the PC 127 commands immediately.
+                    self.midi_manager.send_midi([first_command]) # Original CH2 reset (PC 127)
+                    self.midi_manager.send_midi([ch3_reset_127]) # New CH3 reset (PC 127)
+                    self.midi_manager.send_midi([ch4_reset_127]) # New CH4 reset (PC 127)
                     
                     # 2. Wait for one and a half second as requested.
                     time.sleep(1.5)
                     
-                    # 2b. Send the first command again
+                    # 2b. Send the PC 127 commands again.
                     self.midi_manager.send_midi([first_command])
+                    self.midi_manager.send_midi([ch3_reset_127])
+                    self.midi_manager.send_midi([ch4_reset_127])
                     
                     # 2c. Wait for one and a half second again.
                     time.sleep(1.5)
+
+                    # 2d. Send the PC 126 commands to CH3 and CH4 afterwards.
+                    self.midi_manager.send_midi([ch3_post_126])
+                    self.midi_manager.send_midi([ch4_post_126])
                     
                     # 3. Send CH1-specific commands if any.
                     for cmd in commands_ch1_before:
@@ -627,7 +643,7 @@ class MidiSenderApp:
 
 
     def show_device_switch_popup(self):
-        # (This function was modified in a previous step and remains unchanged here)
+        # (Function content unchanged - Keep previous version)
         if self.device_switch_popup and self.device_switch_popup.winfo_exists():
             self.device_switch_popup.lift()
             return

@@ -88,9 +88,11 @@ class MidiManager:
             if self.midi_device == config.DEVICE_NAME_CH2: # Covers both USB_DIRECT and HYBRID
                 if len(command) > 1 and command[0] == "ch":
                     channel_str = command[1]
-                    if channel_str == "2":
+                    # Route CH2 and CH4 to the Morningstar
+                    if channel_str == "2" or channel_str == "4":
                         target_device = self.midi_device
-                    elif channel_str == "1":
+                    # Route CH1 and CH3 to the Quad Cortex (or reroute in Hybrid)
+                    elif channel_str == "1" or channel_str == "3":
                         target_device = self._qc_midi_target_device
 
             full_cmd = [config.SENDMIDI_PATH, "dev", target_device]

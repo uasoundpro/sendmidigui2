@@ -8,3 +8,4 @@ debug_log.txt
 /gui/__pycache__
 MidiList_Set.csv
 MidiList_Set.csv
+test_new_midi.py
