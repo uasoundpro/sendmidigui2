@@ -18,11 +18,11 @@ CSV_FILE_DEFAULT_SOURCE = os.path.join(SCRIPT_PATH, "MidiList-DEFAULT.csv")
 ICON_FILE = os.path.join(SCRIPT_PATH, "sendmidi.ico")
 
 # =================== MIDI DEVICE NAMES (NOW FLEXIBLE) =====================
-# These will be populated by reload_device_names() from config.json
-# Default values are provided as a fallback.
 DEVICE_NAME_BT = "loopMIDI Port"
-DEVICE_NAME_CH1 = "Quad Cortex MIDI Control" # CH1 (QC)
-DEVICE_NAME_CH2 = "Morningstar MC8 Pro"   # CH2 (MC8) / USB_DIRECT / HYBRID
+DEVICE_NAME_CH1 = "Quad Cortex MIDI Control"   # CH1 (QC 1)
+DEVICE_NAME_CH2 = "Morningstar MC8 Pro"        # CH2 (MC8 1)
+DEVICE_NAME_CH3 = "Quad Cortex MIDI Control 2" # CH3 (QC 2) - Change if needed
+DEVICE_NAME_CH4 = "Morningstar MC6 Pro"        # CH4 (MC6)
 
 # --- !! NEW: Process name to monitor in BT Mode !! ---
 # (Assumes the executable is named this. Change if needed.)
@@ -33,7 +33,7 @@ def reload_device_names(conf=None):
     """
     Loads device names from the config file into these global variables.
     """
-    global DEVICE_NAME_BT, DEVICE_NAME_CH1, DEVICE_NAME_CH2
+    global DEVICE_NAME_BT, DEVICE_NAME_CH1, DEVICE_NAME_CH2, DEVICE_NAME_CH3, DEVICE_NAME_CH4
     
     if not conf:
         conf = load_config()
@@ -41,6 +41,8 @@ def reload_device_names(conf=None):
     DEVICE_NAME_BT = conf.get("DEVICE_NAME_BT", "loopMIDI Port")
     DEVICE_NAME_CH1 = conf.get("DEVICE_NAME_CH1", None) # None forces first-launch popup
     DEVICE_NAME_CH2 = conf.get("DEVICE_NAME_CH2", None) # None forces first-launch popup
+    DEVICE_NAME_CH3 = conf.get("DEVICE_NAME_CH3", "Quad Cortex MIDI Control 2")
+    DEVICE_NAME_CH4 = conf.get("DEVICE_NAME_CH4", "Morningstar MC6 Pro")
 
 # ================ DARK THEME COLORS ===============
 DARK_BG = "#1e1e1e"
@@ -74,7 +76,8 @@ narrow_font_small = ("Arial", 9)
 def save_config(device=None, csv_file_used=None, relaunch_on_monitor_fail=None, 
                 current_setlist_display_name=None, usb_lock_active=None, debug_enabled=None,
                 ch1_override_active=None, # --- !! NEW !! ---
-                DEVICE_NAME_BT=None, DEVICE_NAME_CH1=None, DEVICE_NAME_CH2=None):
+                DEVICE_NAME_BT=None, DEVICE_NAME_CH1=None, DEVICE_NAME_CH2=None,
+                DEVICE_NAME_CH3=None, DEVICE_NAME_CH4=None):
     """Saves application configuration to config.json."""
     config = load_config() # Load existing config first
     
@@ -103,6 +106,10 @@ def save_config(device=None, csv_file_used=None, relaunch_on_monitor_fail=None,
         config["DEVICE_NAME_CH1"] = DEVICE_NAME_CH1
     if DEVICE_NAME_CH2 is not None:
         config["DEVICE_NAME_CH2"] = DEVICE_NAME_CH2
+    if DEVICE_NAME_CH3 is not None:
+        config["DEVICE_NAME_CH3"] = DEVICE_NAME_CH3
+    if DEVICE_NAME_CH4 is not None:
+        config["DEVICE_NAME_CH4"] = DEVICE_NAME_CH4
     # --- !! END NEW !! ---
         
     config["last_run"] = time.time()  # Always update last_run
