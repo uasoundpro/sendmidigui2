@@ -498,26 +498,13 @@ class MidiSenderApp:
             def _send_patch_commands_in_thread():
                 root_exists = self.root and self.root.winfo_exists()
                 try:
-                    ch3_reset_127 = ["ch", "3", "pc", "127"] 
-                    ch4_reset_127 = ["ch", "4", "pc", "127"] 
-                    
-                    ch3_post_126 = ["ch", "3", "pc", "126"]
-                    ch4_post_126 = ["ch", "4", "pc", "126"]
-                    
                     self.midi_manager.send_midi([first_command]) 
-                    self.midi_manager.send_midi([ch3_reset_127]) 
-                    self.midi_manager.send_midi([ch4_reset_127]) 
                     
                     time.sleep(1.5)
                     
                     self.midi_manager.send_midi([first_command])
-                    self.midi_manager.send_midi([ch3_reset_127])
-                    self.midi_manager.send_midi([ch4_reset_127])
                     
                     time.sleep(1.5)
-
-                    self.midi_manager.send_midi([ch3_post_126])
-                    self.midi_manager.send_midi([ch4_post_126])
                     
                     for cmd in commands_ch1_before:
                         self.midi_manager.send_midi([cmd])
