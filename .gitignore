@@ -12,3 +12,7 @@ test_new_midi.py
 test_daisy_chain.py
 test_new_midi.py
 test_new_midi.py
+MIDI-RIG.hxp
+MIDI-RIG-BT.hxp
+MIDI-RIG-IGNORE-BT.hxp
+MIDI-RIG-NO-BT.hxp

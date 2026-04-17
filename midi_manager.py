@@ -3,7 +3,7 @@ import os
 import time
 import threading
 import config
-import traceback # Import traceback
+import traceback
 
 # --- !! NEW: Import psutil for process checking !! ---
 try:
@@ -18,18 +18,17 @@ except ImportError:
 class MidiManager:
     def __init__(self, gui_callback):
         self.gui_callback = gui_callback
-        # Use the flexible config variable
         self.midi_device = config.DEVICE_NAME_BT 
         self.mode_type = "BT"
-        self.debug_enabled = False # Initial state
+        self.debug_enabled = False
 
         self._receivemidi_process = None
         self._receivemidi_stdout_thread = None
         self._receivemidi_stderr_thread = None
 
-        # --- !! SETUP TARGET VARIABLES FOR BOTH QCs !! ---
+        # --- !! SETUP TARGET VARIABLES FOR PILOTS !! ---
         self._qc_midi_target_device = config.DEVICE_NAME_CH1
-        self._qc2_midi_target_device = config.DEVICE_NAME_CH3 
+        self._ms_midi_target_device = config.DEVICE_NAME_CH2 # <--- MC8 is Pilot
 
         self._usb_stable_start_time = None
         self._user_declined_usb_switch = False
@@ -48,7 +47,7 @@ class MidiManager:
 
         # Reset both target devices on mode change
         self._qc_midi_target_device = config.DEVICE_NAME_CH1
-        self._qc2_midi_target_device = config.DEVICE_NAME_CH3 
+        self._ms_midi_target_device = config.DEVICE_NAME_CH2 # <--- MC8 is Pilot
 
         if self.mode_type == "USB_DIRECT" or self.mode_type == "HYBRID":
             self._user_declined_usb_switch = False
@@ -64,7 +63,6 @@ class MidiManager:
     def _is_process_running(self, process_name):
         """
         Checks if a process with the given name is currently running.
-        (Requires psutil to be installed)
         """
         if not PSUTIL_AVAILABLE:
             return None 
@@ -83,19 +81,15 @@ class MidiManager:
         for command in command_list:
             target_device = self.midi_device
             
-            # --- !! EXPLICIT DEVICE ROUTING FOR USB MODES !! ---
+            # --- !! PILOT DEVICE ROUTING FOR USB MODES !! ---
             if self.mode_type == "USB_DIRECT" or self.mode_type == "HYBRID":
                 if len(command) > 1 and command[0] == "ch":
                     channel_str = command[1]
                     
-                    if channel_str == "1":
-                        target_device = self._qc_midi_target_device  # Reroutes to CH2 in Hybrid
-                    elif channel_str == "2":
-                        target_device = config.DEVICE_NAME_CH2       # Explicit CH2
-                    elif channel_str == "3":
-                        target_device = self._qc2_midi_target_device # Reroutes to CH4 in Hybrid
-                    elif channel_str == "4":
-                        target_device = config.DEVICE_NAME_CH4       # Explicit CH4
+                    if channel_str == "1" or channel_str == "3":
+                        target_device = self._qc_midi_target_device  # Reroutes to MC8 Pilot in Hybrid
+                    elif channel_str == "2" or channel_str == "4":
+                        target_device = self._ms_midi_target_device  # Always explicitly the MC8 Pilot
 
             full_cmd = [config.SENDMIDI_PATH, "dev", target_device]
             full_cmd.extend([str(arg) for arg in command])
@@ -106,7 +100,6 @@ class MidiManager:
                 
             self.gui_callback("MIDI_ACTIVITY", {"status": "SENDING"})
 
-            # Use CREATE_NO_WINDOW to hide console flash for sendmidi
             subprocess.run(full_cmd, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
@@ -158,7 +151,7 @@ class MidiManager:
         try:
             receivemidi_cmd = [
                 config.RECEIVEMIDI_PATH,
-                "dev", config.DEVICE_NAME_CH2,
+                "dev", config.DEVICE_NAME_CH2, # <--- MC8 is Pilot
                 "pass", config.DEVICE_NAME_CH1
             ]
             print(f"Launching receivemidi: {' '.join(receivemidi_cmd)}")
@@ -206,7 +199,7 @@ class MidiManager:
         try:
             devices = self.list_devices()
 
-            morningstar_present = config.DEVICE_NAME_CH2 in devices
+            morningstar_present = config.DEVICE_NAME_CH2 in devices # <--- MC8 is Pilot
             quad_cortex_present = config.DEVICE_NAME_CH1 in devices
             both_usb_devices_present = morningstar_present and quad_cortex_present
 
@@ -218,23 +211,22 @@ class MidiManager:
             if self.mode_type == "HYBRID":
                 if ch1_override_active or not quad_cortex_present:
                     # --- !! DUAL REROUTE LOGIC !! ---
-                    # CH1 shifts to MC8, CH3 shifts to MC6
+                    # ALL traffic shifts to MC8 Pilot
                     self._qc_midi_target_device = config.DEVICE_NAME_CH2
-                    self._qc2_midi_target_device = config.DEVICE_NAME_CH4
+                    self._ms_midi_target_device = config.DEVICE_NAME_CH2
                     
                     if ch1_override_active:
-                        mode_label_text = f"Current Mode: {self.mode_type} (QC OVERRIDE to MC8/MC6)"
+                        mode_label_text = f"Current Mode: {self.mode_type} (QC OVERRIDE to MC8)"
                     else:
-                        mode_label_text = f"Current Mode: {self.mode_type} (QC REROUTED to MC8/MC6)"
+                        mode_label_text = f"Current Mode: {self.mode_type} (QC REROUTED to MC8)"
                 else:
                     # Reset back to direct targeting
                     self._qc_midi_target_device = config.DEVICE_NAME_CH1
-                    self._qc2_midi_target_device = config.DEVICE_NAME_CH3
+                    self._ms_midi_target_device = config.DEVICE_NAME_CH2
                     mode_label_text = f"Current Mode: {self.mode_type} (QC DIRECT)"
             else:
-                # In BT or USB_DIRECT, channels always target their configured devices
                 self._qc_midi_target_device = config.DEVICE_NAME_CH1
-                self._qc2_midi_target_device = config.DEVICE_NAME_CH3
+                self._ms_midi_target_device = config.DEVICE_NAME_CH2
 
             bt_monitor_app_running = None 
             if self.mode_type == "BT":
