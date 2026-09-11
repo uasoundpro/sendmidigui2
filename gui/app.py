@@ -219,6 +219,27 @@ class MidiSenderApp:
                                               fg=config.DARK_FG, bg=config.DARK_BG, font=config.narrow_font_plain)
         self.setlist_display_label.pack(side="left", padx=5)
 
+        # --- !! NEW: PANIC BUTTON !! ---
+        def panic_action():
+            print("PANIC triggered! Bypassing setup menus and relaunching...")
+            new_env = os.environ.copy()
+            new_env["MIDI_DEBUG_ENABLED"] = str(self.debug_enabled)
+            new_env["RELAUNCH_MIDI_DEVICE"] = self.midi_device 
+            # Subprocess passes the specific relaunch flag that skips main.py popups
+            subprocess.Popen([sys.executable, sys.argv[0], f"--relaunch={self.mode_type}"], env=new_env)
+            os._exit(0) # Hard process kill to ensure immediate cleanup
+
+        tk.Button(
+            setlist_display_frame,
+            text="PANIC!!!",
+            font=("Arial", 12, "bold"),
+            bg="#ff0000",
+            fg="white",
+            bd=0, padx=12, pady=4,
+            command=panic_action
+        ).pack(side="right", padx=10)
+        # --- !! END NEW !! ---
+
         controls_frame = tk.Frame(self.root, bg=config.DARK_BG)
         controls_frame.pack(fill="x", pady=5)
 

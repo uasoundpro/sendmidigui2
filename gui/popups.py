@@ -81,7 +81,7 @@ def show_device_verification(root):
         popup.configure(bg=config.DARK_BG)
         _add_version_label(popup) # <--- ADDED VERSION
 
-        win_width = 600
+        win_width = 750
         win_height = 350 # Adjusted height
         popup.update_idletasks()
         screen_width = popup.winfo_screenwidth()
@@ -138,6 +138,12 @@ def show_device_verification(root):
         change_button = tk.Button(button_frame, text="Change Devices", font=("Arial", 14),
                                   bg="#b02f2f", fg="white", command=on_change, width=15)
         change_button.grid(row=0, column=1, padx=15)
+
+        # --- !! NEW EXIT BUTTON !! ---
+        exit_btn = tk.Button(button_frame, text="Exit", font=("Arial", 14, "bold"),
+                             bg="#ff0000", fg="white", command=lambda: os._exit(0), width=10)
+        exit_btn.grid(row=0, column=2, padx=15)
+        # --- !! END NEW EXIT BUTTON !! ---
 
         write_log("Calling root.wait_window(popup) for verification... (Window should be visible NOW)")
         root.wait_window(popup)
@@ -336,6 +342,18 @@ def show_initial_device_setup(root):
                                 bg="#2a8f44", fg="white", command=on_save)
         # Position Save button next to Refresh button
         save_button.grid(row=0, column=1, padx=20)
+        
+        # --- !! NEW EXIT BUTTON !! ---
+        exit_setup_btn = tk.Button(
+            button_frame, 
+            text="Exit", 
+            font=("Arial", 16, "bold"),
+            bg="#ff0000", 
+            fg="white", 
+            command=lambda: os._exit(0)
+        )
+        exit_setup_btn.grid(row=0, column=2, padx=20)
+        # --- !! END NEW EXIT BUTTON !! ---
 
 
         write_log("Calling root.wait_window(popup) for device setup... (Window should be visible NOW)")
@@ -373,7 +391,7 @@ def show_setlist_chooser(root):
         _add_version_label(popup) # <--- ADDED VERSION
         
         write_log("Calculating geometry...")
-        win_width = 600
+        win_width = 650
         win_height = 300
         popup.update_idletasks() 
         screen_width = popup.winfo_screenwidth()
@@ -417,6 +435,12 @@ def show_setlist_chooser(root):
                   command=choose_setlist_file, bg="#2a8f44", fg="white").grid(row=0, column=0, padx=10)
         tk.Button(frame, text="Default", font=config.big_font, width=12, height=2,
                   command=handle_default_launch, bg="#28578f", fg="white").grid(row=0, column=1, padx=10)
+        
+        # --- !! NEW EXIT BUTTON !! ---
+        tk.Button(frame, text="Exit", font=config.big_font, width=12, height=2,
+                  command=lambda: os._exit(0), bg="#ff0000", fg="white").grid(row=0, column=2, padx=10)
+        # --- !! END NEW EXIT BUTTON !! ---
+
         write_log("Widgets created.")
 
         write_log("Calling root.wait_window(popup)... (Window should be visible NOW)")
@@ -482,6 +506,13 @@ def _show_setlist_file_picker(root):
         tk.Label(popup, text="Choose a Setlist File:", font=("Comic Sans MS", 26), bg=config.DARK_BG,
                  fg=config.DARK_FG).pack(pady=20)
         
+        # --- !! NEW EXIT BUTTON (Pinned to bottom) !! ---
+        bottom_frame = tk.Frame(popup, bg=config.DARK_BG)
+        bottom_frame.pack(side="bottom", pady=15)
+        tk.Button(bottom_frame, text="Exit Application", font=("Arial", 14, "bold"), 
+                  bg="#ff0000", fg="white", command=lambda: os._exit(0), width=20).pack()
+        # --- !! END NEW EXIT BUTTON !! ---
+
         write_log("Creating canvas and scrollbar for setlist picker...")
         files_frame = tk.Frame(popup, bg=config.DARK_BG)
         files_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -571,7 +602,7 @@ def show_device_chooser(root):
 
         write_log("Calculating geometry for device chooser...")
         win_width = 900
-        win_height = 600
+        win_height = 650
         popup.update_idletasks()
         screen_width = popup.winfo_screenwidth()
         screen_height = popup.winfo_screenheight()
@@ -675,6 +706,11 @@ def show_device_chooser(root):
                           bg=config.BUTTON_BG, fg=config.DARK_FG,
                           command=(lambda d=dev: select_from_list(d, list_window))).pack(pady=5)
             # No disabled list needed here as we filter in _get_device_list
+            
+            # --- !! NEW EXIT BUTTON (List Popup) !! ---
+            tk.Button(list_window, text="Exit Application", font=("Arial", 12, "bold"), 
+                      bg="#ff0000", fg="white", command=lambda: os._exit(0)).pack(pady=(15, 5))
+            # --- !! END NEW EXIT BUTTON !! ---
 
             write_log("List devices popup created.")
 
@@ -709,6 +745,12 @@ def show_device_chooser(root):
         timer_label = tk.Label(popup, text="", bg=config.DARK_BG, fg=config.DARK_FG, font=config.narrow_font_plain)
         timer_label.pack(pady=5)
         timer_count = [15]
+        
+        # --- !! NEW EXIT BUTTON (Main Chooser) !! ---
+        tk.Button(popup, text="Exit Application", font=("Arial", 14, "bold"), 
+                  bg="#ff0000", fg="white", command=lambda: os._exit(0), width=15).pack(pady=10)
+        # --- !! END NEW EXIT BUTTON !! ---
+
         write_log("Starting countdown timer...")
         def countdown():
             if popup.winfo_exists() and timer_count[0] > 0:
@@ -729,4 +771,3 @@ def show_device_chooser(root):
         write_log(traceback.format_exc())
         if popup and popup.winfo_exists():
             popup.destroy()
-
