@@ -34,6 +34,7 @@ class MidiManager:
         self._sendmidi_current_channel = None
 
         # Use the flexible config variable
+        self._ch1_override_active = False
         self._qc_midi_target_device = config.DEVICE_NAME_CH1
 
         self._usb_stable_start_time = None
@@ -46,15 +47,20 @@ class MidiManager:
     def set_root(self, root):
         self._root = root
 
-    def set_mode(self, device, mode, debug_state):
+    def set_mode(self, device, mode, debug_state, ch1_override_active=None):
         self.close_persistent_sendmidi()
         self.midi_device = device
         self.mode_type = mode
         self.debug_enabled = debug_state # Set initial debug state here
+        if ch1_override_active is not None:
+            self._ch1_override_active = bool(ch1_override_active)
         print(f"MidiManager Mode Set: {mode} (Device: {device}, Debug: {debug_state})")
 
-        # Use the flexible config variable
-        self._qc_midi_target_device = config.DEVICE_NAME_CH1
+        # Respect CH1 override immediately in HYBRID mode instead of waiting for the 5s monitor poll
+        if self.mode_type == "HYBRID" and self._ch1_override_active:
+            self._qc_midi_target_device = config.DEVICE_NAME_CH2
+        else:
+            self._qc_midi_target_device = config.DEVICE_NAME_CH1
 
         if self.mode_type == "USB_DIRECT" or self.mode_type == "HYBRID":
             self._user_declined_usb_switch = False
@@ -65,6 +71,14 @@ class MidiManager:
         # Pre-warm persistent sendmidi in background for HYBRID/BT so the very first song click is instant
         if self._should_use_persistent_sendmidi():
             threading.Thread(target=self.warm_persistent_sendmidi, daemon=True).start()
+
+    def set_ch1_override(self, enabled):
+        """Immediately updates CH1 rerouting target when the Hybrid override checkbox is toggled."""
+        self._ch1_override_active = bool(enabled)
+        if self.mode_type == "HYBRID":
+            self._qc_midi_target_device = config.DEVICE_NAME_CH2 if self._ch1_override_active else config.DEVICE_NAME_CH1
+        else:
+            self._qc_midi_target_device = config.DEVICE_NAME_CH1
 
     # --- !! ADDED THIS METHOD !! ---
     def set_debug_state(self, enabled):
@@ -238,7 +252,7 @@ class MidiManager:
             return '"' + s.replace('"', '\\"') + '"'
         return s
 
-    def _send_via_persistent_sendmidi(self, steps):
+    def _send_via_persistent_sendmidi(self, steps, guard=None):
         """
         Streams MIDI commands through the persistent sendmidi.exe -- process,
         handling ['wait_ms', N] pauses directly in Python so the call completes
@@ -263,9 +277,11 @@ class MidiManager:
             chunks.append(("cmd", current_chunk))
 
         if not any(kind == "cmd" for kind, _ in chunks):
-            return True
+            return False
 
         with self._sendmidi_lock:
+            if guard is not None and not guard():
+                return False
             proc = self._ensure_persistent_sendmidi_locked()
             debug_parts = []
             for kind, payload in chunks:
@@ -274,6 +290,9 @@ class MidiManager:
                         debug_parts.append(self._format_sendmidi_delay(payload))
                     time.sleep(payload / 1000.0)
                     continue
+
+                if guard is not None and not guard():
+                    return False
 
                 tokens = []
                 for step in payload:
@@ -302,25 +321,37 @@ class MidiManager:
                 print(f"[MIDI DEBUG] Persistent batch: {' '.join(debug_parts)}")
         return True
 
-    def send_midi_batch(self, steps):
-        """Sends an entire sequence of MIDI messages + delays (persistent pipe in HYBRID/BT, one-shot in USB_DIRECT)."""
+    def send_midi_batch(self, steps, guard=None):
+        """
+        Sends an entire sequence of MIDI messages + delays (persistent pipe in HYBRID/BT,
+        one-shot in USB_DIRECT). Optional guard() is checked under the send lock to
+        prevent stale background sends from racing with newer song clicks.
+        Returns True if MIDI was actually dispatched, False if skipped by guard/empty steps.
+        """
         if not steps:
-            return
+            return False
+
+        if guard is not None and not guard():
+            return False
 
         if self._should_use_persistent_sendmidi():
-            if self.debug_enabled:
-                print("DEBUG: Sending MIDI_ACTIVITY signal (SENDING)")
-            self.gui_callback("MIDI_ACTIVITY", {"status": "SENDING"})
             try:
-                self._send_via_persistent_sendmidi(steps)
-                return
+                sent = self._send_via_persistent_sendmidi(steps, guard=guard)
+                if sent:
+                    if self.debug_enabled:
+                        print("DEBUG: Sending MIDI_ACTIVITY signal (SENDING)")
+                    self.gui_callback("MIDI_ACTIVITY", {"status": "SENDING"})
+                return sent
             except Exception as e:
                 print(f"[MIDI WARNING] Persistent sendmidi failed ({e}); respawning and falling back to one-shot.")
                 self.close_persistent_sendmidi()
 
+        if guard is not None and not guard():
+            return False
+
         full_cmd = self.build_sendmidi_batch_cmd(steps)
         if not full_cmd:
-            return
+            return False
 
         if self.debug_enabled:
             print(f"[MIDI DEBUG] Executing batch: {' '.join(full_cmd)}")
@@ -328,6 +359,7 @@ class MidiManager:
 
         self.gui_callback("MIDI_ACTIVITY", {"status": "SENDING"})
         subprocess.run(full_cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
 
     def send_midi(self, command_list):
         for command in command_list:

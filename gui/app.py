@@ -38,7 +38,12 @@ class MidiSenderApp:
             self.ch1_override_var = tk.BooleanVar(value=self.ch1_override_active)
             # --- !! END NEW !! ---
 
-            self.midi_manager.set_mode(self.midi_device, self.mode_type, self.debug_enabled)
+            self.midi_manager.set_mode(
+                self.midi_device,
+                self.mode_type,
+                self.debug_enabled,
+                ch1_override_active=self.ch1_override_active,
+            )
 
             # Clear flag if it exists (though not used for relaunch signal anymore)
             if self.config.get("relaunch_on_monitor_fail"):
@@ -230,6 +235,13 @@ class MidiSenderApp:
         # --- !! NEW: PANIC BUTTON !! ---
         def panic_action():
             print("PANIC triggered! Bypassing setup menus and relaunching...")
+            # Release MIDI port handles cleanly BEFORE spawning the replacement process
+            try:
+                self._cancel_pending_clock_stop()
+                self.midi_manager.close_persistent_sendmidi()
+                self.midi_manager.kill_receivemidi()
+            except Exception as e:
+                print(f"PANIC cleanup warning: {e}")
             new_env = os.environ.copy()
             new_env["MIDI_DEBUG_ENABLED"] = str(self.debug_enabled)
             new_env["RELAUNCH_MIDI_DEVICE"] = self.midi_device 
@@ -347,10 +359,13 @@ class MidiSenderApp:
         new_state = self.ch1_override_var.get()
         self.ch1_override_active = new_state
         config.save_config(ch1_override_active=new_state)
+        self.midi_manager.set_ch1_override(new_state)
         print(f"CH1 Override {'enabled' if new_state else 'disabled'}.")
-        # Update color immediately
+        # Update color & mode label immediately instead of waiting for the next 5s monitor cycle
         self._update_override_checkbox_state()
-        # The monitor loop will also pick this up on its next cycle if needed
+        if self.mode_type == "HYBRID" and hasattr(self, 'mode_label') and self.mode_label.winfo_exists():
+            suffix = "(QC OVERRIDE to MC8)" if new_state else "(QC DIRECT)"
+            self.mode_label.config(text=f"Current Mode: {self.mode_type} {suffix}")
     # --- !! END NEW !! ---
 
 
@@ -444,7 +459,12 @@ class MidiSenderApp:
             return
 
         # Update manager state (and pre-warm persistent sendmidi if HYBRID/BT)
-        self.midi_manager.set_mode(self.midi_device, self.mode_type, self.debug_enabled)
+        self.midi_manager.set_mode(
+            self.midi_device,
+            self.mode_type,
+            self.debug_enabled,
+            ch1_override_active=self.ch1_override_active,
+        )
 
         # Update GUI label if it exists
         if hasattr(self, 'mode_label') and self.mode_label and self.mode_label.winfo_exists():
@@ -547,17 +567,24 @@ class MidiSenderApp:
 
     def _schedule_clock_stop(self, generation, delay_ms):
         """Stops the MC8 Pro internal clock in the background after delay_ms unless superseded."""
+        def _is_still_current():
+            with self._clock_stop_lock:
+                return generation == self._patch_generation
+
         def _stop_if_current():
             with self._clock_stop_lock:
                 if generation != self._patch_generation:
                     return
                 self._clock_stop_timer = None
             try:
-                self.midi_manager.send_midi_batch([
-                    ["ch", "2", "cc", "5", "0"],
-                    ["ch", "2", "cc", "6", "0"],
-                ])
-                if self.debug_enabled:
+                sent = self.midi_manager.send_midi_batch(
+                    [
+                        ["ch", "2", "cc", "5", "0"],
+                        ["ch", "2", "cc", "6", "0"],
+                    ],
+                    guard=_is_still_current,
+                )
+                if sent and self.debug_enabled:
                     print(f"[MIDI DEBUG] Auto-stopped MC8 MIDI clock after {delay_ms} ms")
             except Exception as e:
                 print(f"Error stopping MC8 MIDI clock: {e}")
