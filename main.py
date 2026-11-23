@@ -78,17 +78,20 @@ try:
                 write_log("main(): Core device names MISSING. Running initial device setup...")
                 popups.show_initial_device_setup(root)
                 conf = config.load_config(); config.reload_device_names(conf)
-            # Verification popup
+            # Verification popup (returns True if user clicked Quick Launch)
             write_log("main(): Calling popups.show_device_verification()...")
-            popups.show_device_verification(root)
+            quick_launched = popups.show_device_verification(root)
             conf = config.load_config(); config.reload_device_names(conf) # Reload in case of changes
             write_log(f"main(): Device names after verification: CH1={config.DEVICE_NAME_CH1}, CH2={config.DEVICE_NAME_CH2}, BT={config.DEVICE_NAME_BT}")
-            # Setlist Chooser
-            write_log("main(): Calling popups.show_setlist_chooser()...")
-            popups.show_setlist_chooser(root)
-            # Mode Chooser
-            write_log("main(): Calling popups.show_device_chooser()...")
-            popups.show_device_chooser(root)
+            if not quick_launched:
+                # Setlist Chooser
+                write_log("main(): Calling popups.show_setlist_chooser()...")
+                popups.show_setlist_chooser(root)
+                # Mode Chooser
+                write_log("main(): Calling popups.show_device_chooser()...")
+                popups.show_device_chooser(root)
+            else:
+                write_log("main(): Quick Launch selected, skipping setlist and mode choosers.")
         else:
             write_log("main(): Relaunch detected, skipping ALL setup/chooser popups.")
             # --- !! MODIFIED: Set environment based on relaunch args !! ---

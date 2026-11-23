@@ -72,17 +72,21 @@ def _get_device_list():
 def show_device_verification(root):
     """
     Shows a popup to verify current MIDI device settings on every launch.
-    Allows user to accept or proceed to change settings.
+    Allows user to Quick Launch straight into the last setup, accept and pick setlist/mode, or change devices.
+    Returns True if Quick Launch was selected, False otherwise.
     """
     write_log("show_device_verification() called.")
+    quick_launch_selected = [False]
+    popup = None
     try:
+        conf = config.load_config()
         popup = tk.Toplevel(root)
         popup.title("Verify MIDI Devices")
         popup.configure(bg=config.DARK_BG)
         _add_version_label(popup) # <--- ADDED VERSION
 
-        win_width = 750
-        win_height = 350 # Adjusted height
+        win_width = 800
+        win_height = 410 # Room for Quick Launch button
         popup.update_idletasks()
         screen_width = popup.winfo_screenwidth()
         screen_height = popup.winfo_screenheight()
@@ -102,12 +106,18 @@ def show_device_verification(root):
         current_ch2 = config.DEVICE_NAME_CH2 if config.DEVICE_NAME_CH2 else "Not Set"
         current_bt = config.DEVICE_NAME_BT if config.DEVICE_NAME_BT else "Not Set"
 
+        last_setlist_name = conf.get("current_setlist_display_name", "Default Songs")
+        last_device = conf.get("device", config.DEVICE_NAME_CH2 or config.DEVICE_NAME_BT)
+        last_mode = conf.get("last_mode")
+        if not last_mode:
+            last_mode = "BT" if last_device == config.DEVICE_NAME_BT else "HYBRID"
+
         # --- Widgets ---
         tk.Label(popup, text="Current MIDI Device Settings:",
-                 font=config.big_font, bg=config.DARK_BG, fg=config.DARK_FG).pack(pady=20)
+                 font=config.big_font, bg=config.DARK_BG, fg=config.DARK_FG).pack(pady=(15, 10))
 
         info_frame = tk.Frame(popup, bg=config.DARK_BG)
-        info_frame.pack(pady=10, padx=30, fill="x")
+        info_frame.pack(pady=8, padx=30, fill="x")
 
         tk.Label(info_frame, text=f"CH1 (e.g., QC):  {current_ch1}",
                  font=config.narrow_font_plain, bg=config.DARK_BG, fg=config.DARK_FG, justify="left").pack(anchor="w", pady=3)
@@ -115,9 +125,15 @@ def show_device_verification(root):
                  font=config.narrow_font_plain, bg=config.DARK_BG, fg=config.DARK_FG, justify="left").pack(anchor="w", pady=3)
         tk.Label(info_frame, text=f"Bluetooth (e.g., loopMIDI):  {current_bt}",
                  font=config.narrow_font_plain, bg=config.DARK_BG, fg=config.DARK_FG, justify="left").pack(anchor="w", pady=3)
+        tk.Label(info_frame, text=f"Last Session:  {last_mode}  |  {last_setlist_name}",
+                 font=config.narrow_font_plain, bg=config.DARK_BG, fg="#9cc4e4", justify="left").pack(anchor="w", pady=(8, 3))
 
-        button_frame = tk.Frame(popup, bg=config.DARK_BG)
-        button_frame.pack(pady=30)
+        def on_quick_launch():
+            write_log(f"User chose Quick Launch ({last_mode}, {last_device}, {last_setlist_name}).")
+            os.environ["MODE_TYPE"] = last_mode
+            os.environ["MIDI_DEVICE"] = last_device
+            quick_launch_selected[0] = True
+            popup.destroy()
 
         def on_ok():
             write_log("User accepted current device settings.")
@@ -130,19 +146,31 @@ def show_device_verification(root):
             show_initial_device_setup(root) # Now open the full setup
             write_log("Returned from show_initial_device_setup().")
 
+        quick_btn = tk.Button(
+            popup,
+            text=f"Quick Launch ({last_mode} — {last_setlist_name})",
+            font=("Arial", 14, "bold"),
+            bg="#28578f", fg="white",
+            command=on_quick_launch,
+            padx=16, pady=8
+        )
+        quick_btn.pack(pady=(12, 8))
 
-        ok_button = tk.Button(button_frame, text="OK (Use These)", font=("Arial", 14),
-                              bg="#2a8f44", fg="white", command=on_ok, width=15)
-        ok_button.grid(row=0, column=0, padx=15)
+        button_frame = tk.Frame(popup, bg=config.DARK_BG)
+        button_frame.pack(pady=10)
 
-        change_button = tk.Button(button_frame, text="Change Devices", font=("Arial", 14),
+        ok_button = tk.Button(button_frame, text="OK (Choose Setlist/Mode)", font=("Arial", 13),
+                              bg="#2a8f44", fg="white", command=on_ok, width=22)
+        ok_button.grid(row=0, column=0, padx=12)
+
+        change_button = tk.Button(button_frame, text="Change Devices", font=("Arial", 13),
                                   bg="#b02f2f", fg="white", command=on_change, width=15)
-        change_button.grid(row=0, column=1, padx=15)
+        change_button.grid(row=0, column=1, padx=12)
 
         # --- !! NEW EXIT BUTTON !! ---
-        exit_btn = tk.Button(button_frame, text="Exit", font=("Arial", 14, "bold"),
+        exit_btn = tk.Button(button_frame, text="Exit", font=("Arial", 13, "bold"),
                              bg="#ff0000", fg="white", command=lambda: os._exit(0), width=10)
-        exit_btn.grid(row=0, column=2, padx=15)
+        exit_btn.grid(row=0, column=2, padx=12)
         # --- !! END NEW EXIT BUTTON !! ---
 
         write_log("Calling root.wait_window(popup) for verification... (Window should be visible NOW)")
@@ -154,6 +182,8 @@ def show_device_verification(root):
         write_log(traceback.format_exc())
         if popup and popup.winfo_exists():
             popup.destroy()
+
+    return quick_launch_selected[0]
 
 # --- !! END NEW POPUP !! ---
 
@@ -622,7 +652,7 @@ def show_device_chooser(root):
 
             os.environ["MIDI_DEVICE"] = device_name
             os.environ["MODE_TYPE"] = mode
-            config.save_config(device=device_name) # Save the *selected* device for this session
+            config.save_config(device=device_name, last_mode=mode) # Save the *selected* device & mode for this session
             write_log(f"Device saved to config. Destroying popup.")
             popup.destroy()
 
@@ -652,7 +682,7 @@ def show_device_chooser(root):
 
             os.environ["MIDI_DEVICE"] = actual_device_to_set
             os.environ["MODE_TYPE"] = mode_type
-            config.save_config(device=actual_device_to_set)
+            config.save_config(device=actual_device_to_set, last_mode=mode_type)
             write_log(f"Device selected from list. Destroying main chooser popup.")
             popup.destroy()
 
@@ -756,7 +786,7 @@ def show_device_chooser(root):
             if popup.winfo_exists() and timer_count[0] > 0:
                 timer_label.config(text=f"Defaulting to BT in {timer_count[0]}s")
                 timer_count[0] -= 1
-                popup.after(1500, countdown)
+                popup.after(1000, countdown)
             elif popup.winfo_exists() and timer_count[0] == 0:
                 write_log("Countdown finished. Timing out to default.")
                 timeout_default()

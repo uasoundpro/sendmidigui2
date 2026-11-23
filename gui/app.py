@@ -51,6 +51,12 @@ class MidiSenderApp:
 
             self.last_press_time = 0
             self.last_selected_button = None
+            self.last_mc8_prog = None
+            self._is_sending = False
+            self._patch_generation = 0
+            self._clock_stop_timer = None
+            self._clock_stop_lock = threading.Lock()
+            self.midi_timing = config.get_midi_timing(self.config)
             self.all_buttons = []
             self.testing_toast_label = None
 
@@ -176,14 +182,16 @@ class MidiSenderApp:
 
     def on_close(self):
         """Handle window close event."""
+        self._cancel_pending_clock_stop()
         if self.toast_timer:
             try:
                 self.root.after_cancel(self.toast_timer)
             except:
                 pass
+        self.midi_manager.close_persistent_sendmidi()
         self.midi_manager.kill_receivemidi()
-        # Save the *last active* device before closing, used by non-relaunch starts
-        config.save_config(device=self.midi_device)
+        # Save the *last active* device & mode before closing, used by Quick Launch / non-relaunch starts
+        config.save_config(device=self.midi_device, last_mode=self.mode_type)
         if self.root and self.root.winfo_exists():
              self.root.destroy()
 
@@ -407,22 +415,13 @@ class MidiSenderApp:
 
     def _set_device_mode(self, new_mode_type, new_device, should_relaunch=False):
         """Sets the MIDI device and mode, optionally relaunching the app."""
+        self._cancel_pending_clock_stop()
+        self.midi_manager.close_persistent_sendmidi()
         self.midi_manager.kill_receivemidi()
         # Don't save device here, only on clean exit (on_close) or manual switch (switch_and_close)
 
         self.midi_device = new_device
         self.mode_type = new_mode_type
-
-        # Update manager state
-        self.midi_manager.set_mode(self.midi_device, self.mode_type, self.debug_enabled)
-
-        # Update GUI label if it exists
-        if hasattr(self, 'mode_label') and self.mode_label and self.mode_label.winfo_exists():
-             self.mode_label.config(text=f"Current Mode: {self.mode_type}")
-
-        # --- !! NEW: Update checkbox state after mode change !! ---
-        self._update_override_checkbox_state()
-        # --- !! END NEW !! ---
 
         if should_relaunch:
             print(f"Relaunching into mode: {new_mode_type} with device: {new_device}")
@@ -443,6 +442,17 @@ class MidiSenderApp:
 
             if self.root and self.root.winfo_exists(): self.root.destroy()
             return
+
+        # Update manager state (and pre-warm persistent sendmidi if HYBRID/BT)
+        self.midi_manager.set_mode(self.midi_device, self.mode_type, self.debug_enabled)
+
+        # Update GUI label if it exists
+        if hasattr(self, 'mode_label') and self.mode_label and self.mode_label.winfo_exists():
+             self.mode_label.config(text=f"Current Mode: {self.mode_type}")
+
+        # --- !! NEW: Update checkbox state after mode change !! ---
+        self._update_override_checkbox_state()
+        # --- !! END NEW !! ---
 
         # If not relaunching, start receivemidi if needed
         self.midi_manager.start_receivemidi()
@@ -528,13 +538,152 @@ class MidiSenderApp:
             traceback.print_exc()
             self.show_toast(msg, bg="red")
 
+    def _cancel_pending_clock_stop(self):
+        """Cancels any scheduled background MC8 clock stop timer."""
+        with self._clock_stop_lock:
+            if self._clock_stop_timer is not None:
+                self._clock_stop_timer.cancel()
+                self._clock_stop_timer = None
+
+    def _schedule_clock_stop(self, generation, delay_ms):
+        """Stops the MC8 Pro internal clock in the background after delay_ms unless superseded."""
+        def _stop_if_current():
+            with self._clock_stop_lock:
+                if generation != self._patch_generation:
+                    return
+                self._clock_stop_timer = None
+            try:
+                self.midi_manager.send_midi_batch([
+                    ["ch", "2", "cc", "5", "0"],
+                    ["ch", "2", "cc", "6", "0"],
+                ])
+                if self.debug_enabled:
+                    print(f"[MIDI DEBUG] Auto-stopped MC8 MIDI clock after {delay_ms} ms")
+            except Exception as e:
+                print(f"Error stopping MC8 MIDI clock: {e}")
+
+        with self._clock_stop_lock:
+            if generation != self._patch_generation:
+                return
+            if self._clock_stop_timer is not None:
+                self._clock_stop_timer.cancel()
+            timer = threading.Timer(max(0.05, delay_ms / 1000.0), _stop_if_current)
+            timer.daemon = True
+            self._clock_stop_timer = timer
+            timer.start()
+
+    def _build_patch_phases(self, label, prog1, prog2, cc_commands):
+        """
+        Builds optimized Phase 1 (MUTE/reset + QC preset load) and Phase 2 (MC8 bank + CCs)
+        MIDI step lists with minimal, targeted settle delays.
+        """
+        timing = self.midi_timing
+        bt_margin = int(timing.get("bt_extra_delay_ms", 40)) if self.mode_type == "BT" else 0
+        mc8_reset_mode = timing.get("mc8_reset_mode", "always_pc127")
+        pc127_settle_ms = int(timing.get("pc127_settle_ms", 120))
+        qc_post_pc_cc_delay_ms = int(timing.get("qc_post_pc_cc_delay_ms", 120))
+        mc8_post_pc_cc_delay_ms = int(timing.get("mc8_post_pc_cc_delay_ms", 60))
+        clock_reset_mode = timing.get("clock_reset_mode", "mc8_pulse")
+        clock_reset_bpm = max(0, min(511, int(timing.get("clock_reset_bpm", 90))))
+        clock_pulse_ms = max(100, int(timing.get("clock_pulse_ms", 1500)))
+
+        ch1_ccs = []
+        other_ccs = []
+        for cmd in cc_commands:
+            if len(cmd) >= 2 and cmd[0] == "ch" and str(cmd[1]) == "1":
+                ch1_ccs.append(cmd)
+            else:
+                other_ccs.append(cmd)
+
+        phase1_steps = []
+        phase2_steps = []
+        sent_pc127_reset = False
+        schedule_clock_stop_ms = 0
+
+        # 1. MC8 reset step (skipped if the target song IS MUTE / PC 127)
+        if prog2 != 127:
+            if mc8_reset_mode == "always_pc127":
+                phase1_steps.append(["ch", "2", "pc", "127"])
+                sent_pc127_reset = True
+            elif mc8_reset_mode == "same_bank_only":
+                if self.last_mc8_prog is None or prog2 == self.last_mc8_prog:
+                    phase1_steps.append(["ch", "2", "pc", "127"])
+                    sent_pc127_reset = True
+                else:
+                    # Morningstar CC#3 value 127 disengages all preset toggles instantaneously
+                    phase1_steps.append(["ch", "2", "cc", "3", "127"])
+            elif mc8_reset_mode == "cc3_clear":
+                phase1_steps.append(["ch", "2", "cc", "3", "127"])
+
+        # 2. Quad Cortex preset load (runs in parallel while MC8 sits in MUTE / Bank 128)
+        if label == "TEST 123" and self.mode_type != "BT":
+            phase1_steps.append(["ch", "1", "pc", "126"])
+        phase1_steps.append(["ch", "1", "cc", "47", "2"])
+        phase1_steps.append(["ch", "1", "pc", str(prog1)])
+
+        # 3. Single overlapped settle delay covering both MC8 bank-leave and QC preset load
+        settle_ms = 0
+        if sent_pc127_reset:
+            settle_ms = max(settle_ms, pc127_settle_ms + bt_margin)
+        if ch1_ccs:
+            settle_ms = max(settle_ms, qc_post_pc_cc_delay_ms + bt_margin)
+
+        # 4. Optional clock reset before MC8 target bank (bank's own clock overrides on enter)
+        if clock_reset_mode == "mc8_pulse":
+            if prog2 == 127:
+                # On MUTE, stop clock immediately instead of pulsing
+                phase2_steps.append(["ch", "2", "cc", "5", "0"])
+                phase2_steps.append(["ch", "2", "cc", "6", "0"])
+            else:
+                msb = (clock_reset_bpm >> 7) & 0x03
+                lsb = clock_reset_bpm & 0x7F
+                phase2_steps.append(["ch", "2", "cc", "5", str(msb)])
+                phase2_steps.append(["ch", "2", "cc", "6", str(lsb)])
+                schedule_clock_stop_ms = clock_pulse_ms
+        elif clock_reset_mode == "mc8_stop":
+            # Morningstar MC8 Pro: BPM = 0 (CC#5=0, CC#6=0) stops the internal MIDI clock
+            phase2_steps.append(["ch", "2", "cc", "5", "0"])
+            phase2_steps.append(["ch", "2", "cc", "6", "0"])
+        elif clock_reset_mode == "mc8_cc":
+            # Morningstar MC8 Pro incoming BPM CCs: CC#5 = MSB (2 bits), CC#6 = LSB (7 bits)
+            msb = (clock_reset_bpm >> 7) & 0x03
+            lsb = clock_reset_bpm & 0x7F
+            phase2_steps.append(["ch", "2", "cc", "5", str(msb)])
+            phase2_steps.append(["ch", "2", "cc", "6", str(lsb)])
+        elif clock_reset_mode == "midi_clock":
+            phase2_steps.append(["clock", str(max(1, clock_reset_bpm))])
+
+        # 5. Follow-up CH1 CCs (e.g., QC Scene select CC 43) after QC settle
+        phase2_steps.extend(ch1_ccs)
+
+        # 6. Switch MC8 to the target song bank
+        phase2_steps.append(["ch", "2", "pc", str(prog2)])
+
+        # 7. Follow-up CH2 CCs (only wait after MC8 PC when CCs actually follow)
+        mc8_cc_delay_ms = (mc8_post_pc_cc_delay_ms + bt_margin) if other_ccs else 0
+        if other_ccs and label != "TEST 123":
+            if mc8_cc_delay_ms > 0:
+                phase2_steps.append(["wait_ms", mc8_cc_delay_ms])
+            phase2_steps.extend(other_ccs)
+
+        return phase1_steps, settle_ms, phase2_steps, other_ccs, schedule_clock_stop_ms
+
     def patch_func_factory(self, current_btn, label, prog1, prog2, cc_commands):
         def patch_func():
+            if self._is_sending:
+                return
             now = time.time()
-            if now - self.last_press_time < 1:
+            debounce_sec = int(self.midi_timing.get("button_debounce_ms", 400)) / 1000.0
+            if now - self.last_press_time < debounce_sec:
                 return
             self.last_press_time = now
-    
+            self._is_sending = True
+
+            with self._clock_stop_lock:
+                self._patch_generation += 1
+                current_gen = self._patch_generation
+            self._cancel_pending_clock_stop()
+
             if self.last_selected_button and self.last_selected_button.winfo_exists():
                 try: self.last_selected_button.config(bg=config.BUTTON_BG)
                 except tk.TclError: pass
@@ -542,69 +691,41 @@ class MidiSenderApp:
                 try: current_btn.config(bg=config.HIGHLIGHT_BG)
                 except tk.TclError: pass
             self.last_selected_button = current_btn
-    
-            for b in self.all_buttons:
-                if b.winfo_exists():
-                    try: b.config(state="disabled")
-                    except tk.TclError: pass
-    
-            self.midi_manager.kill_receivemidi()
-    
-            # --- !! MODIFICATION START !! ---
-            # Isolate the first command and the rest of the commands.
-            first_command = ["ch", "2", "pc", "127"]
-            
-            # --- !! ADDED MIDI CLOCK COMMAND !! ---
-            remaining_commands = [
-                ["ch", "1", "cc", "47", "2"],
-                ["ch", "1", "pc", str(prog1)],
-                ["clock", "90"], # <-- SENDS 'clock 90' COMMAND TO CH2 DEVICE
-                ["ch", "2", "pc", str(prog2)]
-            ] + cc_commands
-            # --- !! END OF CHANGE !! ---
-    
-            commands_ch1_before = []
-            commands_after = []
-    
-            # Apply the existing complex logic ONLY to the remaining commands
-            if self.midi_device == config.DEVICE_NAME_CH2:
-                for cmd in remaining_commands:
-                    if self.mode_type == "USB_DIRECT" and len(cmd) > 1 and cmd[0] == "ch" and cmd[1] == "1" and cmd[2] == "pc":
-                        commands_ch1_before.append(cmd)
-                    else:
-                        commands_after.append(cmd)
-            else:
-                commands_after = remaining_commands
-    
-            if label == "TEST 123" and ["ch", "1", "pc", "126"] not in commands_ch1_before and self.mode_type != "BT":
-                commands_ch1_before.insert(0, ["ch", "1", "pc", "126"])
-    
+
+            phase1_steps, settle_ms, phase2_steps, test_step_ccs, schedule_clock_stop_ms = self._build_patch_phases(
+                label, prog1, prog2, cc_commands
+            )
+
             def _send_patch_commands_in_thread():
                 root_exists = self.root and self.root.winfo_exists()
                 try:
-                    # 1. Send the first command immediately.
-                    self.midi_manager.send_midi([first_command])
-                    
-                    # 2. Wait for one and a half second as requested.
-                    time.sleep(1.5)
-                    
-                    # 2b. Send the first command again
-                    self.midi_manager.send_midi([first_command])
-                    
-                    # 2c. Wait for one and a half second again.
-                    time.sleep(1.5)
-                    
-                    # 3. Send CH1-specific commands if any.
-                    for cmd in commands_ch1_before:
-                        self.midi_manager.send_midi([cmd])
-                    if commands_ch1_before:
-                        time.sleep(0.05)
-    
-                    # 4. Start receivemidi (important for USB_DIRECT mode).
-                    self.midi_manager.start_receivemidi()
-    
-                    # 5. Send the rest of the commands.
-                    if label == "TEST 123":
+                    t_start = time.perf_counter()
+
+                    if self.mode_type == "USB_DIRECT":
+                        # USB_DIRECT needs receivemidi stopped during MUTE/QC PC, then running before MC8 target bank
+                        self.midi_manager.kill_receivemidi()
+                        self.midi_manager.send_midi_batch(phase1_steps)
+
+                        t_after_p1 = time.perf_counter()
+                        self.midi_manager.start_receivemidi()
+
+                        if settle_ms > 0:
+                            elapsed_ms = (time.perf_counter() - t_after_p1) * 1000.0
+                            remaining_ms = settle_ms - elapsed_ms
+                            if remaining_ms > 0:
+                                time.sleep(remaining_ms / 1000.0)
+
+                        self.midi_manager.send_midi_batch(phase2_steps)
+                    else:
+                        # HYBRID and BT modes stream through the persistent sendmidi.exe -- engine
+                        combined_steps = list(phase1_steps)
+                        if settle_ms > 0 and phase2_steps:
+                            combined_steps.append(["wait_ms", settle_ms])
+                        combined_steps.extend(phase2_steps)
+                        self.midi_manager.send_midi_batch(combined_steps)
+
+                    # Keep TEST 123 stepping visibly through its CCs so LEDs can be inspected
+                    if label == "TEST 123" and test_step_ccs:
                         def create_test_toast():
                             if self.root and self.root.winfo_exists():
                                 if self.testing_toast_label and self.testing_toast_label.winfo_exists():
@@ -615,35 +736,40 @@ class MidiSenderApp:
 
                         if root_exists: self.root.after(0, create_test_toast)
 
-                        for cmd in commands_after:
-                            self.midi_manager.send_midi([cmd])
-                            time.sleep(0.25)
+                        time.sleep(0.1)
+                        for idx, cmd in enumerate(test_step_ccs):
+                            self.midi_manager.send_midi_batch([cmd])
+                            if idx < len(test_step_ccs) - 1:
+                                time.sleep(0.25)
 
                         if root_exists:
                             self.root.after(0, lambda: [
                                 self.testing_toast_label.destroy()
                                 if self.testing_toast_label and self.testing_toast_label.winfo_exists() else None
                             ])
-                    else:
-                        for cmd in commands_after:
-                            self.midi_manager.send_midi([cmd])
-                            time.sleep(0.25)
-    
+
+                    self.last_mc8_prog = prog2
+                    if schedule_clock_stop_ms > 0:
+                        self._schedule_clock_stop(current_gen, schedule_clock_stop_ms)
+
+                    if self.debug_enabled:
+                        elapsed_total = (time.perf_counter() - t_start) * 1000.0
+                        print(f"[MIDI DEBUG] Patch '{label}' loaded in {elapsed_total:.0f} ms")
+
                 except Exception as midi_err:
                     print(f"Error during MIDI send thread: {midi_err}")
                     traceback.print_exc()
                     if root_exists:
-                        self.root.after(0, lambda: self.show_toast(f"MIDI Send Error: {midi_err}", bg="red", duration=5000))
-    
+                        self.root.after(0, lambda err=midi_err: self.show_toast(f"MIDI Send Error: {err}", bg="red", duration=5000))
+
                 finally:
                     if root_exists:
-                        self.root.after(0, lambda: [
-                            b.config(state="normal") for b in self.all_buttons if b.winfo_exists()
-                        ])
-            # --- !! MODIFICATION END !! ---
-    
+                        self.root.after(0, lambda: setattr(self, "_is_sending", False))
+                    else:
+                        self._is_sending = False
+
             threading.Thread(target=_send_patch_commands_in_thread, daemon=True).start()
-    
+
         return patch_func
 
 
@@ -677,8 +803,8 @@ class MidiSenderApp:
         btn_frame.pack(pady=20)
 
         def switch_and_close(mode, device):
-            # Save the manually selected device here
-            config.save_config(device=device)
+            # Save the manually selected device & mode here
+            config.save_config(device=device, last_mode=mode)
             self._set_device_mode(mode, device, should_relaunch=False)
             popup.destroy()
 
